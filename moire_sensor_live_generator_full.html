@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Moiré Sensor Live Generator</title>
+  <style>
+    :root {
+      --panel-bg: rgba(255, 255, 255, 0.85);
+      --panel-text: #111;
+      --panel-border: rgba(0,0,0,0.1);
+      --accent: #1f6feb;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      font: 14px/1.4 ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+      color: #111;
+      background: #fff;
+      overflow: hidden;
+      user-select: none;
+      touch-action: none;
+    }
+    canvas { display:block; width:100vw; height:100vh; background:#fff; }
+    video { position: fixed; left: -9999px; top: -9999px; width: 1px; height: 1px; opacity: 0; } /* hidden webcam feed */
+
+    .panel {
+      position: fixed; top: 12px; right: 12px; max-width: 360px; z-index: 10;
+      background: var(--panel-bg);
+      color: var(--panel-text);
+      border: 1px solid var(--panel-border);
+      border-radius: 14px; backdrop-filter: blur(8px);
+      box-shadow: 0 10px 30px rgba(0,0,0,0.08);
+      padding: 12px 12px 8px 12px;
+    }
+    .panel h1 { font-size: 16px; margin: 0 0 8px; letter-spacing: 0.2px; }
+    .row { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 8px; margin: 8px 0; }
+    .row > label { font-size: 12px; opacity: 0.9; }
+    .row span.val { font-feature-settings:"tnum"; font-variant-numeric: tabular-nums; font-size: 12px; opacity: 0.8; }
+
+    .control { margin: 10px 0; }
+    select, input[type="range"], input[type="checkbox"], button {
+      width: 100%;
+    }
+    input[type="range"] { accent-color: var(--accent); }
+    select, button {
+      border: 1px solid var(--panel-border);
+      border-radius: 10px;
+      padding: 8px 10px;
+      background: white;
+      cursor: pointer;
+    }
+    .split { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }
+    .small { font-size: 11px; opacity: 0.8; margin-top: 6px; }
+
+    .badge {
+      display:inline-block; padding: 3px 7px; font-size: 11px; border-radius: 999px; background: #eef2ff; color: #1f3b82; border: 1px solid #c7d2fe; margin-right: 6px;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="view"></canvas>
+  <video id="cam" autoplay playsinline muted></video>
+
+  <div class="panel" id="ui">
+    <h1>Moiré Sensor Live Generator</h1>
+
+    <div class="control">
+      <label>Pattern</label>
+      <select id="pattern">
+        <option value="lines">Parallel lines</option>
+        <option value="grid">Grid</option>
+        <option value="rings">Concentric rings</option>
+        <option value="weave">Weave</option>
+      </select>
+    </div>
+
+    <div class="row">
+      <label>Spacing</label>
+      <span class="val" id="spacingVal"></span>
+    </div>
+    <input id="spacing" type="range" min="3" max="60" value="14" step="1" />
+
+    <div class="row">
+      <label>Line thickness</label>
+      <span class="val" id="thickVal"></span>
+    </div>
+    <input id="thickness" type="range" min="1" max="16" value="2" step="1" />
+
+    <div class="row">
+      <label>Layer offset</label>
+      <span class="val" id="offsetVal"></span>
+    </div>
+    <input id="offset" type="range" min="-40" max="40" value="6" step="1" />
+
+    <div class="row">
+      <label>Rotation speed</label>
+      <span class="val" id="speedVal"></span>
+    </div>
+    <input id="speed" type="range" min="-90" max="90" value="8" step="1" />
+
+    <div class="row">
+      <label>Blend mode</label>
+      <span></span>
+    </div>
+    <select id="blend">
+      <option value="multiply">Multiply</option>
+      <option value="difference">Difference</option>
+      <option value="darken">Darken</option>
+      <option value="lighten">Lighten</option>
+      <option value="overlay">Overlay</option>
+    </select>
+
+    <div class="split">
+      <button id="toggleAnim">Pause animation</button>
+      <button id="invert">Invert colours</button>
+    </div>
+
+    <div class="control">
+      <label>Sensor input</label>
+      <select id="sensor">
+        <option value="pointer">Pointer</option>
+        <option value="motion">Device tilt</option>
+        <option value="mic">Microphone</option>
+        <option value="webcam">Webcam luminance</option>
+        <option value="off">None</option>
+      </select>
+      <div class="small">Use the buttons below to enable permissions if needed.</div>
+      <div class="split" style="margin-top:6px;">
+        <button id="enableMotion">Enable motion</button>
+        <button id="enableMic">Enable mic</button>
+      </div>
+      <div class="split" style="margin-top:6px;">
+        <button id="enableWebcam">Enable webcam</button>
+        <button id="snapshot">Snapshot PNG</button>
+      </div>
+      <div class="small">
+        <span class="badge" id="motionBadge">motion off</span>
+        <span class="badge" id="micBadge">mic off</span>
+        <span class="badge" id="camBadge">webcam off</span>
+      </div>
+    </div>
+
+    <div class="control">
+      <button id="pop">Open pop out</button>
+    </div>
+  </div>
+
+  <script>
+    // Canvas setup
+    const canvas = document.getElementById('view');
+    const ctx = canvas.getContext('2d');
+
+    const ui = {
+      pattern: document.getElementById('pattern'),
+      spacing: document.getElementById('spacing'),
+      spacingVal: document.getElementById('spacingVal'),
+      thickness: document.getElementById('thickness'),
+      thickVal: document.getElementById('thickVal'),
+      offset: document.getElementById('offset'),
+      offsetVal: document.getElementById('offsetVal'),
+      speed: document.getElementById('speed'),
+      speedVal: document.getElementById('speedVal'),
+      blend: document.getElementById('blend'),
+      toggleAnim: document.getElementById('toggleAnim'),
+      invert: document.getElementById('invert'),
+      sensor: document.getElementById('sensor'),
+      enableMotion: document.getElementById('enableMotion'),
+      enableMic: document.getElementById('enableMic'),
+      enableWebcam: document.getElementById('enableWebcam'),
+      motionBadge: document.getElementById('motionBadge'),
+      micBadge: document.getElementById('micBadge'),
+      camBadge: document.getElementById('camBadge'),
+      snapshot: document.getElementById('snapshot'),
+      pop: document.getElementById('pop'),
+    };
+
+    let patSize = 2048;
+    const patCanvas = document.createElement('canvas');
+    const patCtx = patCanvas.getContext('2d', { willReadFrequently: true });
+
+    function resize() {
+      const dpr = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
+      canvas.width = Math.floor(window.innerWidth * dpr);
+      canvas.height = Math.floor(window.innerHeight * dpr);
+      canvas.style.width = window.innerWidth + 'px';
+      canvas.style.height = window.innerHeight + 'px';
+      ctx.setTransform(1,0,0,1,0,0);
+      ctx.scale(dpr, dpr);
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    function crispLine(c, x1, y1, x2, y2, lw) {
+      const adj = (lw % 2 === 1) ? 0.5 : 0;
+      c.beginPath();
+      c.moveTo(x1 + adj, y1 + adj);
+      c.lineTo(x2 + adj, y2 + adj);
+      c.stroke();
+    }
+
+    function drawPattern(kind, spacing, thickness) {
+      patSize = Math.max(1024, Math.ceil(Math.max(window.innerWidth, window.innerHeight) * 2.2));
+      patCanvas.width = patSize;
+      patCanvas.height = patSize;
+      patCtx.setTransform(1,0,0,1,0,0);
+      patCtx.fillStyle = '#fff';
+      patCtx.fillRect(0,0,patSize,patSize);
+      patCtx.strokeStyle = '#000';
+      patCtx.lineWidth = thickness;
+
+      if (kind === 'lines') {
+        for (let x = 0; x <= patSize; x += spacing) {
+          crispLine(patCtx, x, 0, x, patSize, thickness);
+        }
+      } else if (kind === 'grid') {
+        for (let x = 0; x <= patSize; x += spacing) crispLine(patCtx, x, 0, x, patSize, thickness);
+        for (let y = 0; y <= patSize; y += spacing) crispLine(patCtx, 0, y, patSize, y, thickness);
+      } else if (kind === 'rings') {
+        patCtx.beginPath();
+        const cx = patSize / 2, cy = patSize / 2;
+        for (let r = spacing; r < Math.hypot(cx, cy); r += spacing) {
+          patCtx.moveTo(cx + r, cy);
+          patCtx.arc(cx, cy, r, 0, Math.PI * 2);
+        }
+        patCtx.stroke();
+      } else if (kind === 'weave') {
+        patCtx.save();
+        patCtx.translate(patSize/2, patSize/2);
+        patCtx.rotate(Math.PI/4);
+        for (let x = -patSize; x <= patSize; x += spacing) crispLine(patCtx, x, -patSize, x, patSize, thickness);
+        patCtx.rotate(Math.PI/2);
+        for (let x = -patSize; x <= patSize; x += spacing) crispLine(patCtx, x, -patSize, x, patSize, thickness);
+        patCtx.restore();
+      }
+    }
+    drawPattern('lines', 14, 2);
+
+    let state = {
+      kind: 'lines',
+      spacing: 14,
+      thickness: 2,
+      offset: 6,
+      speed: 8,
+      blend: 'multiply',
+      invert: false,
+      animate: true,
+    };
+
+    let pointer = {x: window.innerWidth/2, y: window.innerHeight/2};
+    let motion = {gamma: 0, beta: 0, enabled: false};
+    let mic = {level: 0, enabled: false, ctx: null, analyser: null, data: null};
+    let cam = {
+      enabled: false,
+      video: document.getElementById('cam'),
+      stream: null,
+      w: 0, h: 0,
+      can: document.createElement('canvas'),
+      ctx: null,
+      data: null,
+      centre: {x: 0, y: 0},
+      avg: 0
+    };
+    cam.ctx = cam.can.getContext('2d', { willReadFrequently: true });
+
+    function syncLabels() {
+      ui.spacingVal.textContent = state.spacing + ' px';
+      ui.thickVal.textContent = state.thickness + ' px';
+      ui.offsetVal.textContent = state.offset + ' px';
+      ui.speedVal.textContent = state.speed + ' deg/s';
+    }
+    syncLabels();
+
+    ui.pattern.addEventListener('change', e => {
+      state.kind = e.target.value;
+      drawPattern(state.kind, state.spacing, state.thickness);
+    });
+    ui.spacing.addEventListener('input', e => {
+      state.spacing = parseInt(e.target.value, 10);
+      syncLabels();
+      drawPattern(state.kind, state.spacing, state.thickness);
+    });
+    ui.thickness.addEventListener('input', e => {
+      state.thickness = parseInt(e.target.value, 10);
+      syncLabels();
+      drawPattern(state.kind, state.spacing, state.thickness);
+    });
+    ui.offset.addEventListener('input', e => { state.offset = parseInt(e.target.value, 10); syncLabels(); });
+    ui.speed.addEventListener('input', e => { state.speed = parseInt(e.target.value, 10); syncLabels(); });
+    ui.blend.addEventListener('change', e => { state.blend = e.target.value; });
+
+    ui.toggleAnim.addEventListener('click', () => {
+      state.animate = !state.animate;
+      ui.toggleAnim.textContent = state.animate ? 'Pause animation' : 'Resume animation';
+    });
+
+    ui.invert.addEventListener('click', () => {
+      state.invert = !state.invert;
+      document.body.style.background = state.invert ? '#000' : '#fff';
+    });
+
+    ui.enableMotion.addEventListener('click', async () => {
+      try {
+        if (typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function') {
+          const res = await DeviceMotionEvent.requestPermission();
+          if (res !== 'granted') throw new Error('Permission denied');
+        }
+        window.addEventListener('deviceorientation', onOrientation, { passive: true });
+        motion.enabled = true; ui.motionBadge.textContent = 'motion on'; ui.motionBadge.style.background = '#dcfce7'; ui.motionBadge.style.color = '#166534';
+      } catch {
+        alert('Motion not available or permission was not granted.');
+      }
+    });
+    function onOrientation(e) { motion.gamma = e.gamma || 0; motion.beta = e.beta || 0; }
+
+    ui.enableMic.addEventListener('click', async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        mic.ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const src = mic.ctx.createMediaStreamSource(stream);
+        mic.analyser = mic.ctx.createAnalyser();
+        mic.analyser.fftSize = 512;
+        mic.data = new Uint8Array(mic.analyser.fftSize);
+        src.connect(mic.analyser);
+        mic.enabled = true; ui.micBadge.textContent = 'mic on'; ui.micBadge.style.background = '#dcfce7'; ui.micBadge.style.color = '#166534';
+      } catch {
+        alert('Microphone not available or permission was not granted.');
+      }
+    });
+
+    ui.enableWebcam.addEventListener('click', async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 }, audio: false });
+        cam.stream = stream;
+        cam.video.srcObject = stream;
+        await cam.video.play();
+        cam.enabled = true;
+        ui.camBadge.textContent = 'webcam on';
+        ui.camBadge.style.background = '#dcfce7'; ui.camBadge.style.color = '#166534';
+      } catch {
+        alert('Webcam not available or permission was not granted. Use HTTPS or localhost.');
+      }
+    });
+
+    ui.snapshot.addEventListener('click', () => {
+      try {
+        const link = document.createElement('a');
+        link.download = 'moire.png';
+        link.href = canvas.toDataURL('image/png');
+        link.click();
+      } catch {
+        alert('Save failed in this browser.');
+      }
+    });
+
+    window.addEventListener('pointermove', e => { pointer.x = e.clientX; pointer.y = e.clientY; });
+    window.addEventListener('touchstart', e => {
+      if (e.touches && e.touches[0]) { pointer.x = e.touches[0].clientX; pointer.y = e.touches[0].clientY; }
+    }, {passive: true});
+
+    ui.pop.addEventListener('click', () => {
+      const w = Math.min(screen.availWidth, 1200);
+      const h = Math.min(screen.availHeight, 800);
+      const win = window.open(window.location.href, '_blank', `popup=yes,width=${w},height=${h}`);
+      if (!win) alert('Popup blocked');
+    });
+
+    let last = performance.now();
+    let angle = 0;
+
+    function loop(now) {
+      const dt = Math.max(0, Math.min(0.05, (now - last) / 1000));
+      last = now;
+      if (state.animate) angle += state.speed * dt * Math.PI / 180;
+
+      const mode = ui.sensor.value;
+      let offX = 0, offY = 0, rotExtra = 0;
+
+      if (mode === 'pointer') {
+        const nx = (pointer.x / window.innerWidth) * 2 - 1;
+        const ny = (pointer.y / window.innerHeight) * 2 - 1;
+        offX += nx * 20; offY += ny * 20;
+      } else if (mode === 'motion' && motion.enabled) {
+        offX += (motion.gamma / 45) * 20;
+        offY += (motion.beta / 45) * 20;
+        rotExtra += (motion.gamma || 0) * 0.0025;
+      } else if (mode === 'mic' && mic.enabled && mic.analyser) {
+        mic.analyser.getByteTimeDomainData(mic.data);
+        let sum = 0; for (let i=0;i<mic.data.length;i++){ const d = mic.data[i] - 128; sum += d*d; }
+        mic.level = Math.sqrt(sum / mic.data.length) / 64;
+        const m = Math.max(0, Math.min(1.5, mic.level));
+        rotExtra += m * 0.2;
+        offX += Math.sin(now * 0.01) * 10 * m;
+        offY += Math.cos(now * 0.008) * 10 * m;
+      } else if (mode === 'webcam' && cam.enabled && cam.video.readyState >= 2) {
+        // Downsample the webcam to a small buffer for quick luminance analysis
+        const targetW = 96, targetH = 72;
+        cam.can.width = targetW; cam.can.height = targetH;
+        cam.ctx.drawImage(cam.video, 0, 0, targetW, targetH);
+        const img = cam.ctx.getImageData(0, 0, targetW, targetH);
+        const d = img.data;
+        let sum = 0, cx = 0, cy = 0;
+        for (let y=0; y<targetH; y++) {
+          for (let x=0; x<targetW; x++) {
+            const i = (y*targetW + x) * 4;
+            const r = d[i], g = d[i+1], b = d[i+2];
+            const Y = (0.2126*r + 0.7152*g + 0.0722*b); // luminance
+            sum += Y;
+            cx += Y * x;
+            cy += Y * y;
+          }
+        }
+        const total = targetW * targetH;
+        const avg = sum / total; // 0..255
+        const mx = cx / (sum || 1);
+        const my = cy / (sum || 1);
+        // Normalise to -1..1
+        const nx = (mx / targetW) * 2 - 1;
+        const ny = (my / targetH) * 2 - 1;
+        const na = (avg / 255); // 0..1
+
+        // Map luminance centre to offsets, average brightness to rotation
+        offX += nx * 30;
+        offY += ny * 30;
+        rotExtra += (na - 0.5) * 0.6;
+      }
+
+      drawFrame(offX, offY, rotExtra);
+      requestAnimationFrame(loop);
+    }
+
+    function drawFrame(offX, offY, rotExtra) {
+      const w = canvas.width / (window.devicePixelRatio || 1);
+      const h = canvas.height / (window.devicePixelRatio || 1);
+
+      ctx.save();
+      ctx.setTransform(1,0,0,1,0,0);
+      ctx.clearRect(0,0,canvas.width,canvas.height);
+      ctx.restore();
+      ctx.fillStyle = state.invert ? '#000' : '#fff';
+      ctx.fillRect(0, 0, w, h);
+
+      const cx = w/2, cy = h/2;
+
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.rotate(angle);
+      ctx.translate(-patSize/2, -patSize/2);
+      ctx.drawImage(patCanvas, 0, 0, patSize, patSize);
+      ctx.restore();
+
+      ctx.save();
+      ctx.globalCompositeOperation = state.blend;
+      ctx.translate(cx + state.offset + offX, cy + state.offset + offY);
+      ctx.rotate(-angle + rotExtra);
+      ctx.translate(-patSize/2, -patSize/2);
+      ctx.drawImage(patCanvas, 0, 0, patSize, patSize);
+      ctx.restore();
+
+      const grd = ctx.createRadialGradient(cx, cy, Math.min(w,h)*0.2, cx, cy, Math.max(w,h)*0.7);
+      grd.addColorStop(0, 'rgba(0,0,0,0)');
+      grd.addColorStop(1, state.invert ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.04)');
+      ctx.fillStyle = grd;
+      ctx.fillRect(0,0,w,h);
+    }
+
+    requestAnimationFrame(loop);
+
+    const prefers = window.matchMedia('(prefers-reduced-motion: reduce)');
+    if (prefers.matches) { state.animate = false; ui.toggleAnim.textContent = 'Resume animation'; }
+  </script>
+</body>
+</html>
